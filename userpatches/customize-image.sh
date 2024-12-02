@@ -1,40 +1,31 @@
 #!/bin/bash
-
-# arguments: $RELEASE $LINUXFAMILY $BOARD $BUILD_DESKTOP
-#
-# This is the image customization script
-
-# NOTE: It is copied to /tmp directory inside the image
-# and executed there inside chroot environment
-# so don't reference any files that are not already installed
-
-# NOTE: If you want to transfer files between chroot and host
-# userpatches/overlay directory on host is bind-mounted to /tmp/overlay in chroot
-# The sd card's root path is accessible via $SDCARD variable.
-
-RELEASE=$1
-LINUXFAMILY=$2
-BOARD=$3
-BUILD_DESKTOP=$4
-
-Main() {
-	case $RELEASE in
-		bookworm)
-			# your code here
-			;;
-    		jammy)
-    			 cp /tmp/overlay/led/* /usr/bin/
-    			 cat <<EOF >/etc/rc.local
-#!/bin/bash
-green_on
-exit 0
+# 备份原有的sources.list文件
+sudo cp /etc/apt/sources.list /etc/apt/sources.list.backup
+ 
+# 更新sources.list文件
+sudo tee /etc/apt/sources.list <<EOF
+deb http://ports.ubuntu.com/ jammy main restricted universe multiverse
+#deb-src http://ports.ubuntu.com/ jammy main restricted universe multiverse
+deb http://ports.ubuntu.com/ jammy-security main restricted universe multiverse
+#deb-src http://ports.ubuntu.com/ jammy-security main restricted universe multi>
+deb http://ports.ubuntu.com/ jammy-updates main restricted universe multiverse
+#deb-src http://ports.ubuntu.com/ jammy-updates main restricted universe multiv>
+deb http://ports.ubuntu.com/ jammy-backports main restricted universe multiverse
+#deb-src http://ports.ubuntu.com/ jammy-backports main restricted universe mult>
 EOF
-      			chmod +x /etc/rc.local
-      			systemctl enable rc-local.service
-		 	#cd /tmp/overlay/One-KVM
-      			#bash install.sh
-			;;
-	esac
-} # Main
+# 更新软件包
+sudo apt-get update
 
-Main "$@"
+# 安装 Docker
+sudo apt-get install -y ca-certificates curl gnupg lsb-release alsa-utils 
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+echo \
+  "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu \
+  $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+sudo apt-get update
+sudo apt-get install -y docker-ce docker-ce-cli containerd.io 
+sudo systemctl start docker
+
+# 清理缓存
+apt autoremove -y && apt autoclean && apt remove -y && apt clean
+
