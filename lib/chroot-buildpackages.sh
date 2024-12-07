@@ -1,20 +1,24 @@
 #!/bin/bash
 #
-# Copyright (c) 2015 Igor Pecovnik, igor.pecovnik@gma**.com
+# Copyright (c) 2013-2021 Igor Pecovnik, igor.pecovnik@gma**.com
 #
 # This file is licensed under the terms of the GNU General Public
 # License version 2. This program is licensed "as is" without any
 # warranty of any kind, whether express or implied.
-
+#
 # This file is a part of the Armbian build script
 # https://github.com/armbian/build/
 
 # Functions:
+
 # create_chroot
 # chroot_prepare_distccd
 # chroot_build_packages
 # chroot_installpackages_local
 # chroot_installpackages
+
+
+
 
 # create_chroot <target_dir> <release> <arch>
 #
@@ -26,39 +30,51 @@ create_chroot()
 	declare -A qemu_binary apt_mirror components
 	qemu_binary['armhf']='qemu-arm-static'
 	qemu_binary['arm64']='qemu-aarch64-static'
-	apt_mirror['stretch']="$DEBIAN_MIRROR"
 	apt_mirror['buster']="$DEBIAN_MIRROR"
 	apt_mirror['bullseye']="$DEBIAN_MIRROR"
-	apt_mirror['xenial']="$UBUNTU_MIRROR"
-	apt_mirror['bionic']="$UBUNTU_MIRROR"
 	apt_mirror['focal']="$UBUNTU_MIRROR"
-	apt_mirror['groovy']="$UBUNTU_MIRROR"
-  apt_mirror['jammy']="$UBUNTU_MIRROR"
-	components['stretch']='main,contrib'
+	apt_mirror['jammy']="$UBUNTU_MIRROR"
 	components['buster']='main,contrib'
 	components['bullseye']='main,contrib'
-	components['xenial']='main,universe,multiverse'
-	components['bionic']='main,universe,multiverse'
+	components['sid']='main,contrib'
 	components['focal']='main,universe,multiverse'
-	components['groovy']='main,universe,multiverse'
-  components['jammy']='main,universe,multiverse'
+	components['jammy']='main,universe,multiverse'
 	display_alert "Creating build chroot" "$release/$arch" "info"
-	local includes="ccache,locales,git,ca-certificates,devscripts,libfile-fcntllock-perl,debhelper,rsync,python3,distcc"
+	local includes="ccache,locales,git,ca-certificates,devscripts,libfile-fcntllock-perl,debhelper,rsync,python3,distcc,apt-utils"
+
 	# perhaps a temporally workaround
-	[[ $release == buster || $release == jammy || $release == bullseye || $release == focal || $release == groovy ]] && includes=${includes}",perl-openssl-defaults,libnet-ssleay-perl"
+	case $release in
+		bullseye|focal|jammy|sid)
+			includes=${includes}",perl-openssl-defaults,libnet-ssleay-perl"
+		;;
+	esac
+
 	if [[ $NO_APT_CACHER != yes ]]; then
 		local mirror_addr="http://localhost:3142/${apt_mirror[${release}]}"
 	else
 		local mirror_addr="http://${apt_mirror[${release}]}"
 	fi
-	debootstrap --variant=buildd --components="${components[${release}]}" --arch="${arch}" --foreign --include="${includes}" "${release}" "${target_dir}" "${mirror_addr}"
-	[[ $? -ne 0 || ! -f "${target_dir}"/debootstrap/debootstrap ]] && exit_with_error "Create chroot first stage failed"
+
+	mkdir -p "${target_dir}"
+	cd "${target_dir}"
+
+	debootstrap --variant=buildd \
+				--components="${components[${release}]}" \
+				--arch="${arch}" $DEBOOTSTRAP_OPTION \
+				--foreign \
+				--include="${includes}" "${release}" "${target_dir}" "${mirror_addr}"
+
+	[[ $? -ne 0 || ! -f "${target_dir}"/debootstrap/debootstrap ]] && \
+		exit_with_error "Create chroot first stage failed"
+
 	cp /usr/bin/${qemu_binary[$arch]} "${target_dir}"/usr/bin/
 	[[ ! -f "${target_dir}"/usr/share/keyrings/debian-archive-keyring.gpg ]] && \
 		mkdir -p  "${target_dir}"/usr/share/keyrings/ && \
 		cp /usr/share/keyrings/debian-archive-keyring.gpg "${target_dir}"/usr/share/keyrings/
+
 	chroot "${target_dir}" /bin/bash -c "/debootstrap/debootstrap --second-stage"
 	[[ $? -ne 0 || ! -f "${target_dir}"/bin/bash ]] && exit_with_error "Create chroot second stage failed"
+
 	create_sources_list "$release" "${target_dir}"
 	[[ $NO_APT_CACHER != yes ]] && \
 		echo 'Acquire::http { Proxy "http://localhost:3142"; };' > "${target_dir}"/etc/apt/apt.conf.d/02proxy
@@ -66,8 +82,10 @@ create_chroot()
 	APT::Install-Recommends "0";
 	APT::Install-Suggests "0";
 	EOF
-	[[ -f "${target_dir}"/etc/locale.gen ]] && sed -i "s/^# en_US.UTF-8/en_US.UTF-8/" "${target_dir}"/etc/locale.gen
+	[[ -f "${target_dir}"/etc/locale.gen ]] && \
+	sed -i "s/^# en_US.UTF-8/en_US.UTF-8/" "${target_dir}"/etc/locale.gen
 	chroot "${target_dir}" /bin/bash -c "locale-gen; update-locale LANG=en_US:en LC_ALL=en_US.UTF-8"
+
 	printf '#!/bin/sh\nexit 101' > "${target_dir}"/usr/sbin/policy-rc.d
 	chmod 755 "${target_dir}"/usr/sbin/policy-rc.d
 	rm "${target_dir}"/etc/resolv.conf 2>/dev/null
@@ -80,7 +98,17 @@ create_chroot()
 		mkdir -p "${target_dir}"/var/lock
 	fi
 	chroot "${target_dir}" /bin/bash -c "/usr/sbin/update-ccache-symlinks"
-	[[ $release == focal ]] && chroot "${target_dir}" /bin/bash -c "ln -s /usr/bin/python3 /usr/bin/python"
+
+	display_alert "Upgrading packages in" "${target_dir}" "info"
+	chroot "${target_dir}" /bin/bash -c "apt-get -q update; apt-get -q -y upgrade; apt-get clean"
+	date +%s >"$target_dir/root/.update-timestamp"
+
+	case $release in
+	bullseye|focal|hirsute|sid)
+		chroot "${target_dir}" /bin/bash -c "apt-get install python-is-python3"
+		;;
+	esac
+
 	touch "${target_dir}"/root/.debootstrap-complete
 	display_alert "Debootstrap complete" "${release}/${arch}" "info"
 } #############################################################################
@@ -94,14 +122,13 @@ chroot_prepare_distccd()
 	local arch=$2
 	local dest=/tmp/distcc/${release}-${arch}
 	declare -A gcc_version gcc_type
-	gcc_version['stretch']='6.3'
 	gcc_version['buster']='8.3'
 	gcc_version['bullseye']='9.2'
-	gcc_version['xenial']='5.4'
 	gcc_version['bionic']='5.4'
 	gcc_version['focal']='9.2'
-	gcc_version['groovy']='10.2'
-  gcc_version['jammy']='12'
+	gcc_version['hirsute']='10.2'
+	gcc_version['sid']='10.2'
+	gcc_version['jammy']='12'
 	gcc_type['armhf']='arm-linux-gnueabihf-'
 	gcc_type['arm64']='aarch64-linux-gnu-'
 	rm -f "${dest}"/cmdlist
@@ -128,6 +155,7 @@ chroot_build_packages()
 {
 	local built_ok=()
 	local failed=()
+	mkdir -p ${SRC}/cache/buildpkg
 
 	if [[ $IMAGE_TYPE == user-built ]]; then
 		# if user-built image compile only for selected arch/release
@@ -135,35 +163,70 @@ chroot_build_packages()
 		target_arch="${ARCH}"
 	else
 		# only make packages for recent releases. There are no changes on older
-		target_release="stretch bionic buster bullseye groovy focal"
-		target_arch="armhf arm64"
+		target_release="bullseye focal jammy sid"
+		target_arch="armhf arm64 amd64"
 	fi
 
 	for release in $target_release; do
 		for arch in $target_arch; do
 			display_alert "Starting package building process" "$release/$arch" "info"
 
-			local target_dir
-			target_dir="${SRC}/cache/buildpkg/${release}-${arch}-v${CHROOT_CACHE_VERSION}"
+			local t_name=${release}-${arch}-v${CHROOT_CACHE_VERSION}
 			local distcc_bindaddr="127.0.0.2"
 
-			[[ ! -f "${target_dir}"/root/.debootstrap-complete ]] && create_chroot "${target_dir}" "${release}" "${arch}"
-			[[ ! -f "${target_dir}"/root/.debootstrap-complete ]] && exit_with_error "Creating chroot failed" "${release}/${arch}"
+			# Create a clean environment archive if it does not exist.
+			if [ ! -f "${SRC}/cache/buildpkg/${t_name}.tar.xz" ]; then
+				local tmp_dir=$(mktemp -d "${SRC}"/.tmp/debootstrap-XXXXX)
+				create_chroot "${tmp_dir}/${t_name}" "${release}" "${arch}"
+				display_alert "Create a clean Environment archive" "${t_name}.tar.xz" "info"
+				(
+					tar -cp --directory="${tmp_dir}/" ${t_name} \
+					| pv -p -b -r -s "$(du -sb "${tmp_dir}/${t_name}" | cut -f1)" \
+					| pixz -4 >"${SRC}/cache/buildpkg/${t_name}.tar.xz"
+				)
+				rm -rf $tmp_dir
+			fi
 
-			[[ -f /var/run/distcc/"${release}-${arch}".pid ]] && kill "$(<"/var/run/distcc/${release}-${arch}.pid")" > /dev/null 2>&1
+			# Unpack the clean environment archive, if it exists.
+			if [ -f "${SRC}/cache/buildpkg/${t_name}.tar.xz" ]; then
+				local tmp_dir=$(mktemp -d "${SRC}"/.tmp/build-XXXXX)
+				(	cd $tmp_dir
+					display_alert "Unpack the clean environment" "${t_name}.tar.xz" "info"
+					tar -xJf "${SRC}/cache/buildpkg/${t_name}.tar.xz" || \
+					exit_with_error "Is not extracted" "${SRC}/cache/buildpkg/${t_name}.tar.xz"
+				)
+				target_dir="$tmp_dir/${t_name}"
+			else
+				exit_with_error "Creating chroot failed" "${release}/${arch}"
+			fi
+
+			[[ -f /var/run/distcc/"${release}-${arch}".pid ]] &&
+				kill "$(<"/var/run/distcc/${release}-${arch}.pid")" > /dev/null 2>&1
 
 			chroot_prepare_distccd "${release}" "${arch}"
 
 			# DISTCC_TCP_DEFER_ACCEPT=0
-			DISTCC_CMDLIST=/tmp/distcc/${release}-${arch}/cmdlist TMPDIR=/tmp/distcc distccd --daemon \
-				--pid-file "/var/run/distcc/${release}-${arch}.pid" --listen $distcc_bindaddr --allow 127.0.0.0/24 \
+			DISTCC_CMDLIST=/tmp/distcc/${release}-${arch}/cmdlist \
+				TMPDIR=/tmp/distcc distccd --daemon \
+				--pid-file "/var/run/distcc/${release}-${arch}.pid" \
+				--listen $distcc_bindaddr --allow 127.0.0.0/24 \
 				--log-file "/tmp/distcc/${release}-${arch}.log" --user distccd
+
+			[[ -d $target_dir ]] ||
+				exit_with_error "Clean Environment is not visible" "$target_dir"
 
 			local t=$target_dir/root/.update-timestamp
 			if [[ ! -f ${t} || $(( ($(date +%s) - $(<"${t}")) / 86400 )) -gt 7 ]]; then
 				display_alert "Upgrading packages" "$release/$arch" "info"
 				systemd-nspawn -a -q -D "${target_dir}" /bin/bash -c "apt-get -q update; apt-get -q -y upgrade; apt-get clean"
 				date +%s > "${t}"
+				display_alert "Repack a clean Environment archive after upgrading" "${t_name}.tar.xz" "info"
+				rm "${SRC}/cache/buildpkg/${t_name}.tar.xz"
+				(
+					tar -cp --directory="${tmp_dir}/" ${t_name} \
+					| pv -p -b -r -s "$(du -sb "${tmp_dir}/${t_name}" | cut -f1)" \
+					| pixz -4 >"${SRC}/cache/buildpkg/${t_name}.tar.xz"
+				)
 			fi
 
 			for plugin in "${SRC}"/packages/extras-buildpkgs/*.conf; do
@@ -196,86 +259,54 @@ chroot_build_packages()
 					display_alert "Packages are up to date" "$package_name $release/$arch" "info"
 					continue
 				fi
+
+				# Delete the environment if there was a build in it.
+				# And unpack the clean environment again.
+				if [[ -f "${target_dir}"/root/build.sh ]] && [[ -d $tmp_dir ]]; then
+					rm -rf $tmp_dir
+					local tmp_dir=$(mktemp -d "${SRC}"/.tmp/build-XXXXX)
+					(	cd $tmp_dir
+						display_alert "Unpack the clean environment" "${t_name}.tar.xz" "info"
+						tar -xJf "${SRC}/cache/buildpkg/${t_name}.tar.xz" || \
+						exit_with_error "Is not extracted" "${SRC}/cache/buildpkg/${t_name}.tar.xz"
+					)
+					target_dir="$tmp_dir/${t_name}"
+				fi
+
 				display_alert "Building packages" "$package_name $release/$arch" "ext"
+				ts=$(date +%s)
 				local dist_builddeps_name="package_builddeps_${release}"
 				[[ -v $dist_builddeps_name ]] && package_builddeps="${package_builddeps} ${!dist_builddeps_name}"
 
 				# create build script
-				cat <<-EOF > "${target_dir}"/root/build.sh
-				#!/bin/bash
-				export PATH="/usr/lib/ccache:\$PATH"
-				export HOME="/root"
-				export DEBIAN_FRONTEND="noninteractive"
-				export DEB_BUILD_OPTIONS="nocheck noautodbgsym"
-				export CCACHE_TEMPDIR="/tmp"
-				# distcc is disabled to prevent compilation issues due to different host and cross toolchain configurations
-				#export CCACHE_PREFIX="distcc"
-				# uncomment for debug
-				#export CCACHE_RECACHE="true"
-				#export CCACHE_DISABLE="true"
-				export DISTCC_HOSTS="$distcc_bindaddr"
-				export DEBFULLNAME="$MAINTAINER"
-				export DEBEMAIL="$MAINTAINERMAIL"
-				$(declare -f display_alert)
-				cd /root/build
-				if [[ -n "${package_builddeps}" ]]; then
-					# can be replaced with mk-build-deps
-					deps=()
-					installed=\$(dpkg-query -W -f '\${db:Status-Abbrev}|\${binary:Package}\n' '*' 2>/dev/null | grep '^ii' | awk -F '|' '{print \$2}' | cut -d ':' -f 1)
-					for packet in $package_builddeps; do grep -q -x -e "\$packet" <<< "\$installed" || deps+=("\$packet"); done
-					if [[ \${#deps[@]} -gt 0 ]]; then
-						display_alert "Installing build dependencies"
-						apt-get -y -q update
-						apt-get -y -q --no-install-recommends --show-progress -o DPKG::Progress-Fancy=1 install "\${deps[@]}"
-					fi
-				fi
-				display_alert "Copying sources"
-				rsync -aq /root/sources/"${package_name}" /root/build/
-				cd /root/build/"${package_name}"
-				# copy overlay / "debianization" files
-				[[ -d "/root/overlay/${package_name}/" ]] && rsync -aq /root/overlay/"${package_name}" /root/build/
-				# set upstream version
-				[[ -n "${package_upstream_version}" ]] && debchange --preserve --newversion "${package_upstream_version}" "Import from upstream"
-				# set local version
-				# debchange -l~armbian${REVISION}-${builddate}+ "New Armbian release"
-				debchange -l~armbian"${REVISION}"+ "New Armbian release"
-				display_alert "Building package"
-				dpkg-buildpackage -b -uc -us -j2
-				if [[ \$? -eq 0 ]]; then
-					cd /root/build
-					# install in chroot if other libraries depend on them
-					if [[ -n "$package_install_chroot" ]]; then
-						display_alert "Installing packages"
-						for p in $package_install_chroot; do
-							dpkg -i \${p}_*.deb
-						done
-					fi
-					display_alert "Done building" "$package_name $release/$arch" "ext"
-					ls *.deb 2>/dev/null
-					mv *.deb /root 2>/dev/null
-					exit 0
-				else
-					display_alert "Failed building" "$package_name $release/$arch" "err"
-					exit 2
-				fi
-				EOF
-
-				chmod +x "${target_dir}"/root/build.sh
+				LOG_OUTPUT_FILE=/root/build-"${package_name}".log
+				create_build_script
+				unset LOG_OUTPUT_FILE
 
 				fetch_from_repo "$package_repo" "extra/$package_name" "$package_ref"
 
-				eval systemd-nspawn -a -q --capability=CAP_MKNOD -D "${target_dir}" --tmpfs=/root/build --tmpfs=/tmp:mode=777 --bind-ro "${SRC}"/packages/extras-buildpkgs/:/root/overlay \
+				eval systemd-nspawn -a -q \
+					--capability=CAP_MKNOD -D "${target_dir}" \
+					--tmpfs=/root/build \
+					--tmpfs=/tmp:mode=777 \
+					--bind-ro "${SRC}"/packages/extras-buildpkgs/:/root/overlay \
 					--bind-ro "${SRC}"/cache/sources/extra/:/root/sources /bin/bash -c "/root/build.sh" 2>&1 \
-					${PROGRESS_LOG_TO_FILE:+' | tee -a $DEST/debug/buildpkg.log'}
+					${PROGRESS_LOG_TO_FILE:+' | tee -a $DEST/${LOG_SUBPATH}/buildpkg.log'}
+
 				if [[ ${PIPESTATUS[0]} -eq 2 ]]; then
 					failed+=("$package_name:$release/$arch")
 				else
 					built_ok+=("$package_name:$release/$arch")
 				fi
 				mv "${target_dir}"/root/*.deb "${plugin_target_dir}" 2>/dev/null
+				mv "${target_dir}"/root/*.log "$DEST/${LOG_SUBPATH}/"
+				te=$(date +%s)
+				display_alert "Build time $package_name " " $(($te - $ts)) sec." "info"
 			done
+			# Delete a temporary directory
+			if [ -d $tmp_dir ]; then rm -rf $tmp_dir;fi
 			# cleanup for distcc
-			kill "$(<"/var/run/distcc/${release}-${arch}.pid")"
+			kill $(</var/run/distcc/${release}-${arch}.pid)
 		done
 	done
 	if [[ ${#built_ok[@]} -gt 0 ]]; then
@@ -292,6 +323,81 @@ chroot_build_packages()
 	fi
 } #############################################################################
 
+# create build script
+create_build_script ()
+{
+	cat <<-EOF > "${target_dir}"/root/build.sh
+	#!/bin/bash
+	export PATH="/usr/lib/ccache:\$PATH"
+	export HOME="/root"
+	export DEBIAN_FRONTEND="noninteractive"
+	export DEB_BUILD_OPTIONS="nocheck noautodbgsym"
+	export CCACHE_TEMPDIR="/tmp"
+	# distcc is disabled to prevent compilation issues due
+	# to different host and cross toolchain configurations
+	#export CCACHE_PREFIX="distcc"
+	# uncomment for debug
+	#export CCACHE_RECACHE="true"
+	#export CCACHE_DISABLE="true"
+	export DISTCC_HOSTS="$distcc_bindaddr"
+	export DEBFULLNAME="$MAINTAINER"
+	export DEBEMAIL="$MAINTAINERMAIL"
+	$(declare -f display_alert)
+
+	LOG_OUTPUT_FILE=$LOG_OUTPUT_FILE
+	$(declare -f install_pkg_deb)
+
+	cd /root/build
+	display_alert "Copying sources"
+	rsync -aq /root/sources/"${package_name}" /root/build/
+
+	cd /root/build/"${package_name}"
+	# copy overlay / "debianization" files
+	[[ -d "/root/overlay/${package_name}/" ]] && rsync -aq /root/overlay/"${package_name}" /root/build/
+
+	package_builddeps="$package_builddeps"
+	if [ -z "\$package_builddeps" ]; then
+		# Calculate build dependencies by a standard dpkg function
+		package_builddeps="\$(dpkg-checkbuilddeps |& awk -F":" '{print \$NF}')"
+	fi
+	if [[ -n "\${package_builddeps}" ]]; then
+		install_pkg_deb \${package_builddeps}
+	fi
+
+	# set upstream version
+	[[ -n "${package_upstream_version}" ]] && debchange --preserve --newversion "${package_upstream_version}" "Import from upstream"
+
+	# set local version
+	# debchange -l~armbian${REVISION}-${builddate}+ "Custom $VENDOR release"
+	debchange -l~armbian"${REVISION}"+ "Custom $VENDOR release"
+
+	display_alert "Building package"
+	# Set the number of build threads and certainly send
+	# the standard error stream to the log file.
+	dpkg-buildpackage -b -us -j${NCPU_CHROOT:-2} 2>>\$LOG_OUTPUT_FILE
+
+	if [[ \$? -eq 0 ]]; then
+		cd /root/build
+		# install in chroot if other libraries depend on them
+		if [[ -n "$package_install_chroot" ]]; then
+			display_alert "Installing packages"
+			for p in $package_install_chroot; do
+				dpkg -i \${p}_*.deb
+			done
+		fi
+		display_alert "Done building" "$package_name $release/$arch" "ext"
+		ls *.deb 2>/dev/null
+		mv *.deb /root 2>/dev/null
+		exit 0
+	else
+		display_alert "Failed building" "$package_name $release/$arch" "err"
+		exit 2
+	fi
+	EOF
+
+	chmod +x "${target_dir}"/root/build.sh
+}
+
 # chroot_installpackages_local
 #
 chroot_installpackages_local()
@@ -299,13 +405,13 @@ chroot_installpackages_local()
 	local conf="${SRC}"/config/aptly-temp.conf
 	rm -rf /tmp/aptly-temp/
 	mkdir -p /tmp/aptly-temp/
-	aptly -config="${conf}" repo create temp
+	aptly -config="${conf}" repo create temp >> "${DEST}"/${LOG_SUBPATH}/install.log
 	# NOTE: this works recursively
-	aptly -config="${conf}" repo add temp "${DEB_STORAGE}/extra/${RELEASE}-desktop/"
-	aptly -config="${conf}" repo add temp "${DEB_STORAGE}/extra/${RELEASE}-utils/"
+	aptly -config="${conf}" repo add temp "${DEB_STORAGE}/extra/${RELEASE}-desktop/" >> "${DEST}"/${LOG_SUBPATH}/install.log
+	aptly -config="${conf}" repo add temp "${DEB_STORAGE}/extra/${RELEASE}-utils/" >> "${DEST}"/${LOG_SUBPATH}/install.log
 	# -gpg-key="925644A6"
 	aptly -keyring="${SRC}/packages/extras-buildpkgs/buildpkg-public.gpg" -secret-keyring="${SRC}/packages/extras-buildpkgs/buildpkg.gpg" -batch=true -config="${conf}" \
-		 -gpg-key="925644A6" -passphrase="testkey1234" -component=temp -distribution="${RELEASE}" publish repo temp
+		 -gpg-key="925644A6" -passphrase="testkey1234" -component=temp -distribution="${RELEASE}" publish repo temp >> "${DEST}"/${LOG_SUBPATH}/install.log
 	aptly -config="${conf}" -listen=":8189" serve &
 	local aptly_pid=$!
 	cp "${SRC}"/packages/extras-buildpkgs/buildpkg.key "${SDCARD}"/tmp/buildpkg.key
@@ -327,7 +433,6 @@ chroot_installpackages()
 {
 	local remote_only=$1
 	local install_list=""
-	display_alert "Installing additional packages" "EXTERNAL_NEW"
 	for plugin in "${SRC}"/packages/extras-buildpkgs/*.conf; do
 		source "${plugin}"
 		if [[ $(type -t package_checkinstall) == function ]] && package_checkinstall; then
@@ -335,6 +440,12 @@ chroot_installpackages()
 		fi
 		unset package_install_target package_checkinstall
 	done
+	if [[ -n $PACKAGE_LIST_RM ]]; then
+        install_list=$(sed -r "s/\W($(tr ' ' '|' <<< ${PACKAGE_LIST_RM}))\W/ /g" <<< " ${install_list} ")
+        install_list="$(echo ${install_list})"
+	fi
+	display_alert "Installing extras-buildpkgs" "$install_list"
+
 	[[ $NO_APT_CACHER != yes ]] && local apt_extra="-o Acquire::http::Proxy=\"http://${APT_PROXY_ADDR:-localhost:3142}\" -o Acquire::http::Proxy::localhost=\"DIRECT\""
 	cat <<-EOF > "${SDCARD}"/tmp/install.sh
 	#!/bin/bash
@@ -357,5 +468,5 @@ chroot_installpackages()
 	rm -- "\$0"
 	EOF
 	chmod +x "${SDCARD}"/tmp/install.sh
-	chroot "${SDCARD}" /bin/bash -c "/tmp/install.sh"
+	chroot "${SDCARD}" /bin/bash -c "/tmp/install.sh" >> "${DEST}"/${LOG_SUBPATH}/install.log 2>&1
 } #############################################################################
