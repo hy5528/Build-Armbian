@@ -15,7 +15,7 @@ deb http://ports.ubuntu.com/ jammy-backports main restricted universe multiverse
 EOF
 # 更新软件包
 sudo apt-get update
-
+sudo apt-get upgrade -y
 # 安装 Docker
 sudo apt-get install -y ca-certificates curl gnupg lsb-release alsa-utils 
 curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
